@@ -2,9 +2,9 @@ name: CI with SonarQube Quality Gate
 
 on:
   push:
-    branches: [cicd]
+    branches: [test]
   pull_request:
-    branches: [cicd]
+    branches: [test]
 
 jobs:
   build-test-scan:
