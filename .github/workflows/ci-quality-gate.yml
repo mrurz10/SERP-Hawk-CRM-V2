@@ -59,4 +59,3 @@ jobs:
     steps:
       - name: Deploy
         run: echo "Deploying — quality gate passed"
-EOF
