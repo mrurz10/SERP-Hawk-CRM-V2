@@ -2,9 +2,9 @@ name: CI, Quality Gate, and Deploy to ECR
 
 on:
   push:
-    branches: [test]
+    branches: [cicd]
   pull_request:
-    branches: [test]
+    branches: [cicd]
 
 env:
   AWS_REGION: us-east-1
