@@ -6,7 +6,6 @@ on:
     - test
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: serphawk-backend    # change per repo, or add a matrix for frontend+backend
 
 # Required so the OIDC token can be requested from GitHub for AWS auth
 permissions:
@@ -31,19 +30,30 @@ jobs:
       - name: Login to Amazon ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Build images with Docker Compose
+        run: docker compose build
 
-      - name: Build Docker image
+      - name: Tag backend image for ECR
         run: |
-          docker build -t $ECR_REPOSITORY:${{ github.sha }} .
+          docker tag serp-hawk-crm-v2-backend:latest \
+            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:${{ github.sha }}
+          docker tag serp-hawk-crm-v2-backend:latest \
+            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:latest
 
-      - name: Tag image for ECR
+      - name: Tag frontend image for ECR
         run: |
-          docker tag $ECR_REPOSITORY:${{ github.sha }} \
-            ${{ steps.ecr-login.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
-          docker tag $ECR_REPOSITORY:${{ github.sha }} \
-            ${{ steps.ecr-login.outputs.registry }}/$ECR_REPOSITORY:latest
+          docker tag serp-hawk-crm-v2-frontend:latest \
+            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:${{ github.sha }}
+          docker tag serp-hawk-crm-v2-frontend:latest \
+            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:latest
 
-      - name: Push image to ECR
+      - name: Push backend image to ECR
         run: |
-          docker push ${{ steps.ecr-login.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
-          docker push ${{ steps.ecr-login.outputs.registry }}/$ECR_REPOSITORY:latest
+          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:${{ github.sha }}
+          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:latest
+
+      - name: Push frontend image to ECR
+        run: |
+          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:${{ github.sha }}
+          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:latest
