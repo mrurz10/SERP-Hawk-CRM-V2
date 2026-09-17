@@ -37,23 +37,17 @@ jobs:
       - name: Tag backend image for ECR
         run: |
           docker tag serp-hawk-crm-v2-backend:latest \
-            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:${{ github.sha }}
-          docker tag serp-hawk-crm-v2-backend:latest \
-            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:latest
+            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:v${{ github.run_number }}
 
       - name: Tag frontend image for ECR
         run: |
           docker tag serp-hawk-crm-v2-frontend:latest \
-            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:${{ github.sha }}
-          docker tag serp-hawk-crm-v2-frontend:latest \
-            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:latest
+            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:v${{ github.run_number }}
 
       - name: Push backend image to ECR
         run: |
-          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:${{ github.sha }}
-          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:latest
+          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:v${{ github.run_number }}
 
       - name: Push frontend image to ECR
         run: |
-          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:${{ github.sha }}
-          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:latest
+          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:v${{ github.run_number }}
