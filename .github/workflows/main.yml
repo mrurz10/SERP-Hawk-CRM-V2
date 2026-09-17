@@ -2,9 +2,9 @@ name: CI/CD - Test, Quality Gate, Build & Deploy
 
 on:
   push:
-    branches: [test]
+    branches: [tes1]
   pull_request:
-    branches: [test]
+    branches: [test1]
 
 env:
   AWS_REGION: us-east-1
