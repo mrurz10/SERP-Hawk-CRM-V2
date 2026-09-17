@@ -25,7 +25,7 @@ jobs:
       - name: Run backend tests with coverage
         run: |
           pip install pytest pytest-cov
-          pytest --cov=. --cov-report=xml || true
+          pytest --cov=. --cov-report=xml || [ $? -eq 5 ]
 
       - name: Set up Node
         uses: actions/setup-node@v4
