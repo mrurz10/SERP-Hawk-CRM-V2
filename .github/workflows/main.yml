@@ -1,61 +1,49 @@
-name: CI with SonarQube Quality Gate
+name: Build and Push to ECR
 
 on:
   push:
-    branches: [cicd]
-  pull_request:
-    branches: [cicd]
+    branches: [test]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: serphawk-backend    # change per repo, or add a matrix for frontend+backend
+
+# Required so the OIDC token can be requested from GitHub for AWS auth
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  build-test-scan:
+  build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Short-lived credentials issued to this exact repo/workflow only -
+      # no AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY stored as a secret
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          fetch-depth: 0
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10.13'
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Install backend deps
-        run: pip install -r requirements.txt
-
-      - name: Run backend tests with coverage
+      - name: Build Docker image
         run: |
-          pip install pytest pytest-cov
-          pytest --cov=. --cov-report=xml || [ $? -eq 5 ]
+          docker build -t $ECR_REPOSITORY:${{ github.sha }} .
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - name: Tag image for ECR
+        run: |
+          docker tag $ECR_REPOSITORY:${{ github.sha }} \
+            ${{ steps.ecr-login.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
+          docker tag $ECR_REPOSITORY:${{ github.sha }} \
+            ${{ steps.ecr-login.outputs.registry }}/$ECR_REPOSITORY:latest
 
-      - name: Install frontend deps
-        working-directory: frontend
-        run: npm install
-
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v4
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-
-      - name: SonarQube Quality Gate Check
-        uses: SonarSource/sonarqube-quality-gate-action@v1
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-
-  deploy:
-    needs: build-test-scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy
-        run: echo "Deploying — quality gate passed"
+      - name: Push image to ECR
+        run: |
+          docker push ${{ steps.ecr-login.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
+          docker push ${{ steps.ecr-login.outputs.registry }}/$ECR_REPOSITORY:latest
