@@ -1,0 +1,53 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches: [cicd]
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}  # change per repo, or add a matrix for frontend+backend
+
+# Required so the OIDC token can be requested from GitHub for AWS auth
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Short-lived credentials issued to this exact repo/workflow only -
+      # no AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY stored as a secret
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Build and push backend
+        run: |
+          IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/serph-awk-backend"
+
+          docker build -t "$IMAGE:${{ github.sha }}" ./backend
+          docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:latest"
+
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Build and push frontend
+        run: |
+          IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/serph-awk-frontend"
+
+          docker build -t "$IMAGE:${{ github.sha }}" ./frontend
+          docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:latest"
+
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
