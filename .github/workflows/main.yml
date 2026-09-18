@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------
-  # Stage 1: Tests + SonarQube Quality Gates
+  # Stage 1: Tests + SonarQube Quality Gate
   # Runs on every push and PR. Nothing downstream happens unless this passes.
   # ---------------------------------------------------------------------
   build-test-scan:
