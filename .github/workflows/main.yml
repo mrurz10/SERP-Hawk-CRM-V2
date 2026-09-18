@@ -14,10 +14,6 @@ permissions:
   contents: read
 
 jobs:
-  # ---------------------------------------------------------------------
-  # Stage 1: Tests + SonarQube Quality Gates
-  # Runs on every push and PR. Nothing downstream happens unless this passes.
-  # ---------------------------------------------------------------------
   build-test-scan:
     runs-on: ubuntu-latest
     steps:
@@ -56,12 +52,6 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          with:
-          args: >
-            -Dsonar.projectKey=${{ github.event.repository.name }}
-            -Dsonar.projectName=${{ github.event.repository.name }}
-            -Dsonar.sources=.
-            -Dsonar.exclusions=**/node_modules/**,**/frontend/node_modules/**,**/.next/**
 
       - name: SonarQube Quality Gate Check
         uses: SonarSource/sonarqube-quality-gate-action@v1
@@ -70,13 +60,9 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-  # ---------------------------------------------------------------------
-  # Stage 2: Build & Push to ECR
-  # Only runs on an actual push to `test` (not PRs), and only if Stage 1 passed.
-  # ---------------------------------------------------------------------
   build-and-push:
     needs: build-test-scan
-    if: github.event_name == 'push' && github.ref == 'refs/heads/test'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/test-dev'
     runs-on: ubuntu-latest
     outputs:
       version: v${{ github.run_number }}
@@ -114,5 +100,3 @@ jobs:
       - name: Push frontend image to ECR
         run: |
           docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:v${{ github.run_number }}
-
- 
