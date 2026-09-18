@@ -2,9 +2,9 @@ name: CI/CD - Test, Quality Gate, Build & Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [terraform]
   pull_request:
-    branches: [main]
+    branches: [terraform]
 
 env:
   AWS_REGION: us-east-1
