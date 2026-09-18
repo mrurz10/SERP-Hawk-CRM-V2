@@ -189,7 +189,7 @@ resource "aws_instance" "deploy_server" {
   user_data = <<-EOF
     #!/bin/bash
     set -e
-
+    sudo dnf install -y unzip
     # Install Docker
     dnf update -y
     dnf install -y docker
