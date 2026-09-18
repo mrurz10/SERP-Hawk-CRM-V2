@@ -76,7 +76,6 @@ jobs:
   # ---------------------------------------------------------------------
   build-and-push:
     needs: build-test-scan
-    if: github.event_name == 'push' && github.ref == 'refs/heads/test'
     runs-on: ubuntu-latest
     outputs:
       version: v${{ github.run_number }}
