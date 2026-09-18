@@ -7,7 +7,9 @@ on:
         description: 'Image tag to deploy (e.g. v1, latest)'
         required: true
         default: 'latest'
-
+permissions:
+  id-token: write   # Required for requesting the OIDC JWT token
+  contents: read    # Required to checkout repository code
 env:
   AWS_REGION: us-east-1 # Matches your Terraform default AWS region
 
