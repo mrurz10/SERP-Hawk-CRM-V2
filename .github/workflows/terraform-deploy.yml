@@ -1,4 +1,4 @@
-name: Terraform - Deploy EC2 Infrastructure
+name: Terraform - Deploy appserver (ec2) Infrastructure
 
 on:
   workflow_dispatch:
