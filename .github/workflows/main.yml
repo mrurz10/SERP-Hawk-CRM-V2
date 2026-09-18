@@ -1,4 +1,4 @@
-name: CI/CD - Test, Quality Gate, Build & Deploy
+name: CI/CD - Test, Quality Gate, Build & Deploys
 
 on:
   push:
