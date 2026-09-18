@@ -1,4 +1,20 @@
-build-test-scan:
+name: CI/CD - Test, Quality Gate, Build & Deploy
+
+on:
+  push:
+    branches: [test-dev]
+  pull_request:
+    branches: [test-dev]
+
+env:
+  AWS_REGION: us-east-1
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-test-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,3 +116,12 @@ build-test-scan:
       - name: Push frontend image to ECR
         run: |
           docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:v${{ github.run_number }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy
+        run: |
+          echo "Deploying version ${{ needs.build-and-push.outputs.version }}"
+          echo "Images pushed, quality gate passed — ready for deploy step"
