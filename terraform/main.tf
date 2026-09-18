@@ -225,6 +225,7 @@ resource "aws_instance" "deploy_server" {
   }
 }
 
+
 # ---------------------------------------------------------------------------
 # Elastic IP — static public IP attached to the deployment instance
 # ---------------------------------------------------------------------------
