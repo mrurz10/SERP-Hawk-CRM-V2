@@ -2,7 +2,7 @@ name: CI/CD - Test, Quality Gate, Build & Deploy
 
 on:
   push:
-    branches: [tes1]
+    branches: [test1]
   pull_request:
     branches: [test1]
 
