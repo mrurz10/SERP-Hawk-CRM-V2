@@ -1,0 +1,137 @@
+name: CI/CD - Test, Quality Gate, Build & Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-test-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10.13'
+
+      - name: Install backend deps
+        run: pip install -r requirements.txt
+
+      - name: Run backend tests with coverage
+        run: |
+          pip install pytest pytest-cov
+          pytest --cov=. --cov-report=xml || [ $? -eq 5 ]
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Ensure SonarQube project exists
+        run: |
+          curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
+            -X POST "${{ secrets.SONAR_HOST_URL }}/api/projects/create" \
+            -d "project=${{ github.event.repository.name }}" \
+            -d "name=${{ github.event.repository.name }}" || true
+
+      - name: Generate sonar-project.properties
+        run: |
+          cat > sonar-project.properties <<EOF
+          sonar.projectKey=${{ github.event.repository.name }}
+          sonar.projectName=${{ github.event.repository.name }}
+          sonar.sources=.
+          sonar.exclusions=**/node_modules/**,**/frontend/node_modules/**,**/.next/**
+          EOF
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: SonarQube Quality Gate Check
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  build-and-push:
+    needs: build-test-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/test-dev'
+    runs-on: ubuntu-latest
+    outputs:
+      version: v${{ github.run_number }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build images with Docker Compose
+        run: docker compose build
+
+      - name: Trivy scan (report only)
+        run: |
+          echo "===== Backend image ====="
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image --severity CRITICAL,HIGH serp-hawk-crm-v2-backend:latest
+
+          echo "===== Frontend image ====="
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image --severity CRITICAL,HIGH serp-hawk-crm-v2-frontend:latest
+
+      - name: Tag backend image for ECR
+        run: |
+          docker tag serp-hawk-crm-v2-backend:latest \
+            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:v${{ github.run_number }}
+
+      - name: Tag frontend image for ECR
+        run: |
+          docker tag serp-hawk-crm-v2-frontend:latest \
+            ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:v${{ github.run_number }}
+
+      - name: Push backend image to ECR
+        run: |
+          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2-b:v${{ github.run_number }}
+
+      - name: Push frontend image to ECR
+        run: |
+          docker push ${{ steps.ecr-login.outputs.registry }}/serp-hawk-crm-v2:v${{ github.run_number }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy
+        run: |
+          echo "Deploying version ${{ needs.build-and-push.outputs.version }}"
+          echo "Images pushed, quality gate passed — ready for deploy step"
