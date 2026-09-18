@@ -131,7 +131,23 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Deploy via SSM
         run: |
-          echo "Deploying version ${{ needs.build-and-push.outputs.version }}"
-          echo "Images pushed, quality gate passed — ready for deploy step"
+          aws ssm send-command \
+            --instance-ids "i-077e3df342b2104be" \
+            --document-name "AWS-RunShellScript" \
+            --parameters commands='[
+              "aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 602097553037.dkr.ecr.us-east-1.amazonaws.com",
+              "docker pull 602097553037.dkr.ecr.us-east-1.amazonaws.com/serp-hawk-crm-v2-b:v${{ github.run_number }}",
+              "docker pull 602097553037.dkr.ecr.us-east-1.amazonaws.com/serp-hawk-crm-v2:v${{ github.run_number }}",
+              "docker stop serp-hawk-backend serp-hawk-frontend || true",
+              "docker rm serp-hawk-backend serp-hawk-frontend || true",
+              "docker run -d --name serp-hawk-backend --restart unless-stopped -p 8000:8000 602097553037.dkr.ecr.us-east-1.amazonaws.com/serp-hawk-crm-v2-b:v${{ github.run_number }}",
+              "docker run -d --name serp-hawk-frontend --restart unless-stopped -p 3000:3000 602097553037.dkr.ecr.us-east-1.amazonaws.com/serp-hawk-crm-v2:v${{ github.run_number }}"
+            ]'
