@@ -1,20 +1,4 @@
-name: CI/CD - Test, Quality Gate, Build & Deploy
-
-on:
-  push:
-    branches: [test-dev]
-  pull_request:
-    branches: [test-dev]
-
-env:
-  AWS_REGION: us-east-1
-
-permissions:
-  id-token: write
-  contents: read
-
-jobs:
-  build-test-scan:
+build-test-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +30,22 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+      - name: Ensure SonarQube project exists
+        run: |
+          curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
+            -X POST "${{ secrets.SONAR_HOST_URL }}/api/projects/create" \
+            -d "project=${{ github.event.repository.name }}" \
+            -d "name=${{ github.event.repository.name }}" || true
+
+      - name: Generate sonar-project.properties
+        run: |
+          cat > sonar-project.properties <<EOF
+          sonar.projectKey=${{ github.event.repository.name }}
+          sonar.projectName=${{ github.event.repository.name }}
+          sonar.sources=.
+          sonar.exclusions=**/node_modules/**,**/frontend/node_modules/**,**/.next/**
+          EOF
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v4
