@@ -171,7 +171,7 @@ data "aws_ami" "amazon_linux_2023" {
 }
 
 # ---------------------------------------------------------------------------
-# EC2 Instance — Docker + Compose installed via user_data on first boot
+# EC2 Instance — Docker, Compose & SSM Agent configured via user_data
 # ---------------------------------------------------------------------------
 resource "aws_instance" "deploy_server" {
   ami                    = data.aws_ami.amazon_linux_2023.id
@@ -189,9 +189,12 @@ resource "aws_instance" "deploy_server" {
   user_data = <<-EOF
     #!/bin/bash
     set -e
-    sudo dnf install -y unzip
-    # Install Docker
+
+    # Update packages and install prerequisites
     dnf update -y
+    dnf install -y unzip
+
+    # Install and start Docker
     dnf install -y docker
     systemctl enable docker
     systemctl start docker
@@ -207,8 +210,14 @@ resource "aws_instance" "deploy_server" {
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
     unzip -q /tmp/awscliv2.zip -d /tmp
     /tmp/aws/install
+    rm -rf /tmp/awscliv2.zip /tmp/aws
 
-    # SSM Agent is pre-installed on Amazon Linux 2023 AMIs by default
+    # Ensure SSM Agent is installed, enabled, and running
+    if ! rpm -q amazon-ssm-agent >/dev/null 2>&1; then
+      dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+    fi
+    systemctl enable amazon-ssm-agent
+    systemctl restart amazon-ssm-agent
   EOF
 
   tags = {
