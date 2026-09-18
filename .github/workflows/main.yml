@@ -99,6 +99,16 @@ jobs:
       - name: Build images with Docker Compose
         run: docker compose build
 
+      - name: Trivy scan (report only)
+        run: |
+          echo "===== Backend image ====="
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image --severity CRITICAL,HIGH serp-hawk-crm-v2-backend:latest
+
+          echo "===== Frontend image ====="
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image --severity CRITICAL,HIGH serp-hawk-crm-v2-frontend:latest
+
       - name: Tag backend image for ECR
         run: |
           docker tag serp-hawk-crm-v2-backend:latest \
