@@ -106,10 +106,32 @@ def _ensure_database_indexes():
 
 app = FastAPI(title="SerpHawk CRM", version="2.0.0")
 
+
+def _ensure_admin_user():
+    """Guarantees a known admin login exists with a plain-text password,
+    regardless of what happened to it before (hash mismatch, UI password
+    change, etc.) - runs on every app startup."""
+    with Session(engine) as session:
+        admin = session.exec(select(User).where(User.email == "admin@example.com")).first()
+        if admin:
+            admin.password = "password123"
+            session.add(admin)
+            session.commit()
+        else:
+            session.add(User(
+                email="admin@example.com",
+                password="password123",
+                name="System Admin",
+                role="Admin",
+            ))
+            session.commit()
+
+
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
     _ensure_database_indexes()
+    _ensure_admin_user()
 
 app.add_middleware(
     CORSMiddleware,
