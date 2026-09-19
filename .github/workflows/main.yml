@@ -8,6 +8,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
+  EC2_TAG_NAME: serp-hawk-deploy-server
 
 permissions:
   id-token: write
@@ -92,12 +93,51 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # ---------------------------------------------------------
+      # Fetch the CURRENT public IP of the deploy target, so the
+      # frontend is always built pointing at the right backend -
+      # NEXT_PUBLIC_* vars are baked in at build time, not runtime,
+      # so this must be resolved fresh on every build, not hardcoded.
+      # ---------------------------------------------------------
+      - name: Locate EC2 instance and public IP
+        id: instance
+        run: |
+          ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${{ env.EC2_TAG_NAME }}" \
+                       "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId" \
+            --output text)
+
+          if [ -z "$ID" ] || [ "$ID" == "None" ]; then
+            echo "Error: No running instance found with tag Name=${{ env.EC2_TAG_NAME }}" >&2
+            exit 1
+          fi
+
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids "$ID" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text)
+
+          if [ -z "$PUBLIC_IP" ] || [ "$PUBLIC_IP" == "None" ]; then
+            echo "Error: Instance $ID has no public IP" >&2
+            exit 1
+          fi
+
+          echo "Found EC2 Instance ID: $ID  Public IP: $PUBLIC_IP"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "public_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+
       - name: Login to Amazon ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
+      # docker-compose.yml reads NEXT_PUBLIC_API_BASE_URL from the shell
+      # environment as a build arg - exporting it here makes `docker
+      # compose build` pick up the live IP automatically.
       - name: Build images with Docker Compose
-        run: docker compose build
+        run: |
+          export NEXT_PUBLIC_API_BASE_URL=http://${{ steps.instance.outputs.public_ip }}:8000
+          docker compose build
 
       - name: Trivy scan (report only)
         run: |
@@ -130,8 +170,68 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
+    environment: production   # requires a human reviewer to approve, if configured in repo settings
     steps:
-      - name: Deploy
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Locate EC2 instance
+        id: instance
         run: |
-          echo "Deploying version ${{ needs.build-and-push.outputs.version }}"
-          echo "Images pushed, quality gate passed — ready for deploy step"
+          ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${{ env.EC2_TAG_NAME }}" \
+                       "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId" \
+            --output text)
+
+          if [ -z "$ID" ] || [ "$ID" == "None" ]; then
+            echo "Error: No running instance found with tag Name=${{ env.EC2_TAG_NAME }}" >&2
+            exit 1
+          fi
+
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy via AWS SSM
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ steps.instance.outputs.id }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy ${{ needs.build-and-push.outputs.version }}" \
+            --parameters commands="[
+              \"set -e\",
+              \"mkdir -p /home/ec2-user/app\",
+              \"REGION=${{ env.AWS_REGION }}\",
+              \"ACCOUNT_ID=\$(aws sts get-caller-identity --query Account --output text)\",
+              \"REGISTRY=\${ACCOUNT_ID}.dkr.ecr.\${REGION}.amazonaws.com\",
+              \"aws ecr get-login-password --region \$REGION | docker login --username AWS --password-stdin \$REGISTRY\",
+              \"echo 'DATABASE_URL=${{ secrets.DATABASE_URL }}' > /home/ec2-user/app/.env\",
+              \"echo 'GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}' >> /home/ec2-user/app/.env\",
+              \"echo 'SECRET_KEY=${{ secrets.SECRET_KEY }}' >> /home/ec2-user/app/.env\",
+              \"echo 'EMAIL_SENDER=${{ secrets.EMAIL_SENDER }}' >> /home/ec2-user/app/.env\",
+              \"echo 'EMAIL_PASSWORD=${{ secrets.EMAIL_PASSWORD }}' >> /home/ec2-user/app/.env\",
+              \"echo 'SENDER_EMAIL=${{ secrets.SENDER_EMAIL }}' >> /home/ec2-user/app/.env\",
+              \"echo 'SENDER_PASSWORD=${{ secrets.SENDER_PASSWORD }}' >> /home/ec2-user/app/.env\",
+              \"docker pull \$REGISTRY/serp-hawk-crm-v2-b:${{ needs.build-and-push.outputs.version }}\",
+              \"docker pull \$REGISTRY/serp-hawk-crm-v2:${{ needs.build-and-push.outputs.version }}\",
+              \"docker network create serp-hawk-net || true\",
+              \"docker stop serp-hawk-backend serp-hawk-frontend || true\",
+              \"docker rm serp-hawk-backend serp-hawk-frontend || true\",
+              \"docker run -d --name serp-hawk-backend --network serp-hawk-net --restart unless-stopped -p 8000:8000 --env-file /home/ec2-user/app/.env \$REGISTRY/serp-hawk-crm-v2-b:${{ needs.build-and-push.outputs.version }}\",
+              \"docker run -d --name serp-hawk-frontend --network serp-hawk-net --restart unless-stopped -p 3000:3000 \$REGISTRY/serp-hawk-crm-v2:${{ needs.build-and-push.outputs.version }}\",
+              \"shred -u /home/ec2-user/app/.env\",
+              \"docker image prune -f\"
+            ]" \
+            --query "Command.CommandId" --output text)
+
+          echo "Deployment command sent (Command ID: $COMMAND_ID). Waiting for execution..."
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ steps.instance.outputs.id }}"
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ steps.instance.outputs.id }}"
