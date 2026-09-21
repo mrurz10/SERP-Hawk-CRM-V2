@@ -1,51 +1,3 @@
-terraform {
-  required_version = ">= 1.5.0"
-
-  backend "s3" {
-    # Bucket, key, region, dynamodb_table are supplied at `terraform init` time
-    # via -backend-config flags in the CI workflow, so this stays portable
-    # and doesn't hardcode an account-specific bucket name here.
-  }
-
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-provider "aws" {
-  region = var.aws_region
-}
-
-# ---------------------------------------------------------------------------
-# Variables
-# ---------------------------------------------------------------------------
-variable "aws_region" {
-  description = "AWS region to deploy into"
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "instance_type" {
-  description = "EC2 instance type for the deployment server"
-  type        = string
-  default     = "t3.medium"
-}
-
-variable "allowed_http_cidr" {
-  description = "CIDR block allowed to reach the app ports (3000, 8000). Restrict this in production."
-  type        = string
-  default     = "0.0.0.0/0"
-}
-
-variable "key_name" {
-  description = "Optional EC2 key pair name for emergency SSH fallback access. Leave null to disable SSH entirely (SSM-only)."
-  type        = string
-  default     = null
-}
-
 # ---------------------------------------------------------------------------
 # Auto-discover default VPC and a public subnet within it
 # ---------------------------------------------------------------------------
@@ -53,7 +5,6 @@ data "aws_vpc" "default" {
   default = true
 }
 
-# Picks the first subnet in the default VPC that auto-assigns public IPs
 data "aws_subnets" "public" {
   filter {
     name   = "vpc-id"
@@ -70,7 +21,7 @@ data "aws_subnets" "public" {
 # IAM Role + Instance Profile (SSM-managed, ECR read-only)
 # ---------------------------------------------------------------------------
 resource "aws_iam_role" "deploy_ec2_role" {
-  name = "serp-hawk-deploy-ec2-role"
+  name = "${var.name_prefix}-deploy-ec2-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -84,6 +35,8 @@ resource "aws_iam_role" "deploy_ec2_role" {
       }
     ]
   })
+
+  tags = var.tags
 }
 
 # Lets AWS Systems Manager (SSM) manage this instance — no SSH/open ports needed
@@ -98,8 +51,28 @@ resource "aws_iam_role_policy_attachment" "ecr_read_only" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# Optional: lets the instance read app secrets from SSM Parameter Store
+# at /<name_prefix>/* (e.g. /serp-hawk/database_url)
+resource "aws_iam_role_policy" "ssm_parameter_read" {
+  count = var.enable_ssm_secrets_access ? 1 : 0
+
+  name = "${var.name_prefix}-app-secrets-read"
+  role = aws_iam_role.deploy_ec2_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+        Resource = "arn:aws:ssm:${var.aws_region}:*:parameter/${var.name_prefix}/*"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "deploy_ec2_profile" {
-  name = "serp-hawk-deploy-ec2-profile"
+  name = "${var.name_prefix}-deploy-ec2-profile"
   role = aws_iam_role.deploy_ec2_role.name
 }
 
@@ -107,8 +80,8 @@ resource "aws_iam_instance_profile" "deploy_ec2_profile" {
 # Security Group — only inbound app ports; SSM needs no inbound rules at all
 # ---------------------------------------------------------------------------
 resource "aws_security_group" "deploy_sg" {
-  name        = "serp-hawk-deploy-sg"
-  description = "Security group for SERP Hawk CRM deployment EC2"
+  name        = "${var.name_prefix}-deploy-sg"
+  description = "Security group for ${var.name_prefix} deployment EC2"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
@@ -147,9 +120,7 @@ resource "aws_security_group" "deploy_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "serp-hawk-deploy-sg"
-  }
+  tags = merge(var.tags, { Name = "${var.name_prefix}-deploy-sg" })
 }
 
 # ---------------------------------------------------------------------------
@@ -182,47 +153,13 @@ resource "aws_instance" "deploy_server" {
   key_name               = var.key_name
 
   root_block_device {
-    volume_size = 20
+    volume_size = var.root_volume_size
     volume_type = "gp3"
   }
 
-  user_data = <<-EOF
-    #!/bin/bash
-    set -e
+  user_data = file("${path.module}/user_data.sh")
 
-    # Update packages and install prerequisites
-    dnf update -y
-    dnf install -y unzip
-
-    # Install and start Docker
-    dnf install -y docker
-    systemctl enable docker
-    systemctl start docker
-    usermod -aG docker ec2-user
-
-    # Install Docker Compose plugin
-    mkdir -p /usr/local/lib/docker/cli-plugins
-    curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
-      -o /usr/local/lib/docker/cli-plugins/docker-compose
-    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-
-    # Install AWS CLI v2
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
-    unzip -q /tmp/awscliv2.zip -d /tmp
-    /tmp/aws/install
-    rm -rf /tmp/awscliv2.zip /tmp/aws
-
-    # Ensure SSM Agent is installed, enabled, and running
-    if ! rpm -q amazon-ssm-agent >/dev/null 2>&1; then
-      dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
-    fi
-    systemctl enable amazon-ssm-agent
-    systemctl restart amazon-ssm-agent
-  EOF
-
-  tags = {
-    Name = "serp-hawk-deploy-server"
-  }
+  tags = merge(var.tags, { Name = "${var.name_prefix}-deploy-server" })
 }
 
 # ---------------------------------------------------------------------------
@@ -232,37 +169,7 @@ resource "aws_eip" "deploy_eip" {
   domain   = "vpc"
   instance = aws_instance.deploy_server.id
 
-  tags = {
-    Name = "serp-hawk-deploy-eip"
-  }
+  tags = merge(var.tags, { Name = "${var.name_prefix}-deploy-eip" })
 
   depends_on = [aws_instance.deploy_server]
-}
-
-# ---------------------------------------------------------------------------
-# Outputs
-# ---------------------------------------------------------------------------
-output "instance_id" {
-  description = "EC2 instance ID — use this in the GitHub Actions deploy job's aws ssm send-command"
-  value       = aws_instance.deploy_server.id
-}
-
-output "instance_public_ip" {
-  description = "Static Elastic IP attached to the deployment server"
-  value       = aws_eip.deploy_eip.public_ip
-}
-
-output "vpc_id" {
-  description = "Default VPC ID used for this instance"
-  value       = data.aws_vpc.default.id
-}
-
-output "subnet_id" {
-  description = "Subnet ID the instance was launched into"
-  value       = data.aws_subnets.public.ids[0]
-}
-
-output "iam_role_arn" {
-  description = "IAM role ARN attached to the deployment EC2"
-  value       = aws_iam_role.deploy_ec2_role.arn
 }

@@ -1,0 +1,19 @@
+# Terraform local state and cache — never commit these
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Plan output files
+*.tfplan
+tfplan
+
+# Local variable overrides — may contain environment-specific values
+# you don't want tracked; the .example file stays committed as a template
+terraform.tfvars
+!terraform.tfvars.example
+
+# Crash logs
+crash.log
+crash.*.log

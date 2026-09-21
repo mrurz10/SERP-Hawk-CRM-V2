@@ -1,0 +1,21 @@
+# Copy this file to terraform.tfvars and adjust as needed.
+#
+# IMPORTANT: before running `terraform apply`, create the SSM parameter
+# this config depends on:
+#
+#   aws ssm put-parameter \
+#     --name "/sonarqube/db_password" \
+#     --value "YourStrongPasswordHere" \
+#     --type "SecureString"
+#
+# Terraform never sees or stores the raw password - it only grants the
+# EC2 instance permission to read it at boot time.
+
+aws_region              = "us-east-1"
+name_prefix              = "sonarqube"
+instance_type             = "t3.medium"
+allowed_web_cidr          = "0.0.0.0/0"  # tighten this to your office/VPN/CI runner IPs
+allowed_ssh_cidr          = "0.0.0.0/0"
+key_name                  = null
+sonarqube_version         = "10.6.0.92116"
+db_password_ssm_param     = "/sonarqube/db_password"
