@@ -1,4 +1,4 @@
-name: Terraform - Deploy appserver Infrastructure
+name: Terraform - Deploy Infrastructure
 
 on:
   workflow_dispatch:
@@ -15,19 +15,23 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  TF_WORKING_DIR: terraform
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  terraform:
+  # ---------------------------------------------------------
+  # Runs once: shared setup both environments depend on -
+  # the state bucket/lock table, and the SonarQube DB password
+  # written to SSM before either environment's apply runs.
+  # ---------------------------------------------------------
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      state_bucket: ${{ steps.bucket.outputs.name }}
+      lock_table: ${{ steps.bucket.outputs.lock_table }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -42,22 +46,17 @@ jobs:
             --type "SecureString" \
             --overwrite
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.9.0"
-
       - name: Resolve AWS account ID
         id: account
         run: |
           echo "id=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Terraform state bucket + lock table exist
+        id: bucket
         env:
           TF_STATE_BUCKET: serp-hawk-tfstate-${{ steps.account.outputs.id }}
           TF_LOCK_TABLE: serp-hawk-tfstate-lock
         run: |
-          # --- S3 bucket for state (create only if it doesn't already exist) ---
           if ! aws s3api head-bucket --bucket "$TF_STATE_BUCKET" 2>/dev/null; then
             echo "Creating state bucket: $TF_STATE_BUCKET"
             aws s3api create-bucket \
@@ -83,7 +82,6 @@ jobs:
             echo "State bucket already exists: $TF_STATE_BUCKET"
           fi
 
-          # --- DynamoDB table for state locking (create only if missing) ---
           if ! aws dynamodb describe-table --table-name "$TF_LOCK_TABLE" >/dev/null 2>&1; then
             echo "Creating lock table: $TF_LOCK_TABLE"
             aws dynamodb create-table \
@@ -97,44 +95,67 @@ jobs:
             echo "Lock table already exists: $TF_LOCK_TABLE"
           fi
 
-          echo "TF_STATE_BUCKET=$TF_STATE_BUCKET" >> "$GITHUB_ENV"
-          echo "TF_LOCK_TABLE=$TF_LOCK_TABLE" >> "$GITHUB_ENV"
+          echo "name=$TF_STATE_BUCKET" >> "$GITHUB_OUTPUT"
+          echo "lock_table=$TF_LOCK_TABLE" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------
+  # Runs twice in parallel - once per environment folder,
+  # each with its own state file, so applying one never
+  # touches or risks the other.
+  # ---------------------------------------------------------
+  terraform:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [prod, sonarqube]
+    defaults:
+      run:
+        working-directory: terraform/environments/${{ matrix.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
 
       - name: Terraform Init
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
-            -backend-config="key=serp-hawk/deploy-ec2.tfstate" \
+            -backend-config="bucket=${{ needs.prepare.outputs.state_bucket }}" \
+            -backend-config="key=serp-hawk/${{ matrix.environment }}.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ env.TF_LOCK_TABLE }}" \
+            -backend-config="dynamodb_table=${{ needs.prepare.outputs.lock_table }}" \
             -backend-config="encrypt=true"
 
       - name: Terraform Format Check
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform fmt -check
         continue-on-error: true
 
       - name: Terraform Validate
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform validate
 
       - name: Terraform Plan
         if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         if: github.event.inputs.action == 'apply'
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform apply -auto-approve tfplan
 
       - name: Terraform Destroy
         if: github.event.inputs.action == 'destroy'
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform destroy -auto-approve
 
       - name: Show Outputs
         if: github.event.inputs.action == 'apply'
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform output
