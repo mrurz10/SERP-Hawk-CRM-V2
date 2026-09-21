@@ -80,7 +80,13 @@ resource "aws_security_group" "sonarqube_sg" {
     protocol    = "tcp"
     cidr_blocks = [var.allowed_web_cidr]
   }
-
+  ingress {
+    description = "SonarQube direct access"
+    from_port   = 9000
+    to_port     = 9000
+    protocol    = "tcp"
+    cidr_blocks = [var.allowed_web_cidr]
+}
   dynamic "ingress" {
     for_each = var.key_name != null ? [1] : []
     content {
