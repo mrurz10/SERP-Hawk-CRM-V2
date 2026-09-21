@@ -63,8 +63,8 @@ echo ">>> Step 7: Start and configure PostgreSQL"
 systemctl enable postgresql
 systemctl start postgresql
 
-sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '$DB_PASSWORD';"
-sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+sudo -u postgres psql -c "CREATE USER $${DB_USER} WITH PASSWORD '$DB_PASSWORD';"
+sudo -u postgres psql -c "CREATE DATABASE $${DB_NAME} OWNER $${DB_USER};"
 
 echo ">>> Step 8: Download and extract SonarQube"
 cd /opt
@@ -81,9 +81,9 @@ echo ">>> Step 10: Configure SonarQube database connection"
 cat >> "$SONAR_INSTALL_DIR/conf/sonar.properties" << PROPSEOF
 
 # --- Added by provisioning script ---
-sonar.jdbc.username=${DB_USER}
+sonar.jdbc.username=$${DB_USER}
 sonar.jdbc.password=$DB_PASSWORD
-sonar.jdbc.url=jdbc:postgresql://localhost:5432/${DB_NAME}
+sonar.jdbc.url=jdbc:postgresql://localhost:5432/$${DB_NAME}
 sonar.web.host=0.0.0.0
 sonar.web.port=9000
 PROPSEOF
