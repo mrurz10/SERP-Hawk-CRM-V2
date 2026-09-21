@@ -1,797 +1,219 @@
 # SERP Hawk CRM V2
 
-AI-powered CRM platform for SEO agencies, built with Next.js, FastAPI, PostgreSQL, and Docker.
+AI-Powered CRM for SEO Agencies | Next.js + FastAPI + PostgreSQL + Google Gemini
+
+## Overview
+
+SERP Hawk CRM V2 is a comprehensive customer relationship management system designed specifically for SEO agencies and digital marketing firms. It manages the entire client lifecycle from cold outreach to project delivery, billing, and SEO monitoring.
+
+### Key Features
+
+- **Role-Based Access**: Admin, Employee, Intern, Client roles with appropriate permissions
+- **AI Email Agent**: Automated company research and personalized email generation
+- **Real-Time Messaging**: WebSocket-based chat system
+- **Service Management**: Catalog, quotes, invoicing, and billing
+- **SEO Tools**: Keyword rankings, competitor analysis, SEO audits
+- **Document Management**: File uploads, OCR for business cards
+- **Reporting**: PDF exports, monitoring dashboards
+
+## Tech Stack
+
+- **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS 4, Framer Motion
+- **Backend**: FastAPI (Python 3.12), SQLModel ORM, Uvicorn with WebSocket
+- **Database**: PostgreSQL (Neon Serverless)
+- **AI**: Google Gemini 2.0 Flash (swapped in from OpenAI — see note below)
+- **Integrations**: Outlook SMTP/IMAP, Webhooks, ReportLab PDFs
+
+> **Note on AI provider:** The original project used OpenAI's GPT-4o-mini, which requires a paid API key. For this deployment, `modules/llm_engine.py` was rewritten to use Google Gemini instead (which has a genuine free tier), while keeping the exact same function signatures (`analyze_content`, `generate_email`, `analyze_document`). This means the AI-powered features (email generation, content analysis, document OCR fallback) work out of the box with no paid dependency. Four other modules that call OpenAI directly (`market_analyzer.py`, `fallback_analyzer.py`, `serp_hawk_email.py`, `service_extractor.py`) were left as-is and are not currently wired to a working key — noted here for transparency.
 
 ---
 
-# 1. Project Overview
-Architecture overview
+## Live Deployment
 
-Layer 1 — CI/CD and provisioning. GitHub Actions (running both the application CI/CD pipeline and Terraform) authenticates to AWS entirely through OIDC federation into a single scoped IAM role — no long-lived access keys are stored anywhere. That role is used three ways: to manage Terraform's own state (S3, with DynamoDB for locking, so two pipeline runs can never corrupt state by applying concurrently), to read and write secrets in SSM Parameter Store (currently the SonarQube database password), and to provision the actual AWS resources below.
+This project is deployed on **AWS EC2** (single instance). See [Deployment Architecture](#deployment-architecture) below for the full reasoning behind this choice.
 
-GitHub ActionsCI/CD + Terraform, OIDC
-AWS IAM roleGitHub Actions role (OIDC)
-Terraform stateS3 + DynamoDB locking
-SSM Parameter StoreDB password secrets
-AWS resourcesEC2s + ECR
-
-Layer 2 — application infrastructure. Terraform provisions this layer as two independent environments, each with its own state file (serp-hawk/prod.tfstate and serp-hawk/sonarqube.tfstate), so applying one never risks the other. The app server runs Amazon Linux 2023 on a t3.medium with a 20GB root volume, an Elastic IP, and a security group open on ports 3000 and 8000 (SSH disabled by default — management goes through SSM only). Its IAM role grants read-only ECR access, nothing broader. The SonarQube server runs Ubuntu with its own local PostgreSQL database for SonarQube's internal metadata, entirely separate from the application's data.
-
-Amazon ECRDocker image registry
-SonarQube EC2Nginx :80 to SonarQube:9000
-App server EC2Next.js :3000, FastAPI :8000
-Neon PostgreSQLManaged database(external)
-
-A separate deployment workflow (deploy.yml) pulls the images ECR just received onto the app server via AWS Systems Manager Run Command — no SSH keys involved at any point. The application itself connects to Neon, a managed serverless PostgreSQL database, kept as the single source of truth for application data throughout this deployment rather than self-hosting a database for it.
-
-SERP Hawk CRM V2 is a full-stack CRM application designed for SEO agencies.
-
-The application consists of:
-
-* **Frontend:** Next.js 16 / React 19 / TypeScript / Tailwind CSS
-* **Backend:** FastAPI / Python 3.13 / SQLModel / Uvicorn
-* **Database:** PostgreSQL hosted on Neon
-* **Containerization:** Docker
-* **Container orchestration:** Docker Compose
-* **CI/CD:** GitHub Actions
-* **Container registry:** Amazon ECR
-* **Application hosting:** Amazon EC2
-* **EC2 management:** AWS Systems Manager (SSM)
-* **AWS authentication:** GitHub OIDC + AWS IAM
+- **Frontend URL**: `http://<EC2_PUBLIC_IP>:3000`
+- **Backend API**: `http://<EC2_PUBLIC_IP>:8000`
+- **API Docs (Swagger)**: `http://<EC2_PUBLIC_IP>:8000/docs`
 
 ---
 
-# 2. AWS Architecture
+## Deployment Architecture
 
-The deployment architecture follows this flow:
+### What was actually deployed
 
-```text
-Developer
-    |
-    | git push
-    v
-GitHub Repository
-    |
-    v
-GitHub Actions
-    |
-    | GitHub OIDC
-    v
-AWS IAM Role
-    |
-    | Build & Push
-    v
-+-----------------------------+
-|        Amazon ECR           |
-|                             |
-|  serphawk-backend           |
-|  serphawk-frontend          |
-+--------------+--------------+
-               |
-               | Pull Images
-               v
-+--------------------------------------+
-|              AWS EC2                |
-|                                      |
-|          Docker Compose              |
-|                                      |
-|   +----------------------------+     |
-|   | Frontend Container         |     |
-|   | Next.js                    |     |
-|   | Port 3000                  |     |
-|   +----------------------------+     |
-|                                      |
-|   +----------------------------+     |
-|   | Backend Container          |     |
-|   | FastAPI / Uvicorn          |     |
-|   | Port 8000                  |     |
-|   +----------------------------+     |
-+------------------+-------------------+
-                   |
-                   | PostgreSQL
-                   v
-          Neon PostgreSQL
+A **single AWS EC2 instance** (Ubuntu 24.04 LTS, t2/t3.micro — AWS Free Tier eligible) runs both the FastAPI backend and the Next.js frontend as persistent `systemd` services. The database is **Neon** (managed serverless PostgreSQL), not AWS RDS, to reduce moving parts and cost.
 
-AWS Systems Manager
-        |
-        | Secure EC2 management
-        v
-       EC2
-
-GitHub Actions
-        |
-        | OIDC
-        v
-    AWS IAM Role
 ```
-<img width="1536" height="1024" alt="final_img" src="https://github.com/user-attachments/assets/0a2137d0-2a5f-4374-b2cb-5ce3f2c7805f" />
-
-
-
----
-
-# 3. Deployment Flow
-
-The deployment process is:
-
-1. Developer pushes code to the `cicd` branch.
-2. GitHub Actions starts the CI/CD workflow.
-3. GitHub Actions authenticates with AWS using GitHub OIDC.
-4. AWS IAM validates the OIDC identity and provides temporary AWS credentials.
-5. GitHub Actions logs in to Amazon ECR.
-6. The backend Docker image is built.
-7. The frontend Docker image is built.
-8. Both images are pushed to Amazon ECR.
-9. EC2 pulls the latest images from ECR.
-10. Docker Compose starts the frontend and backend containers.
-11. The application connects to the Neon PostgreSQL database.
-12. Users access the deployed application through the EC2-hosted application.
-
----
-
-# 4. AWS Services
-
-## AWS services used and why
-
-| Service | Purpose | Why this, not the alternative |
-|---|---|---|
-| **EC2 (app server)** | Hosts the CRM frontend and backend as Docker containers — Amazon Linux 2023, t3.medium, Elastic IP, SSH disabled (SSM-only management), IAM role scoped to read-only ECR access | Free Tier eligible; simplest way to run a full-stack containerized app without the added cost/complexity of ECS or EKS for a project this size |
-| **EC2 (SonarQube server)** | Hosts a self-managed SonarQube Community Edition instance for code quality analysis | Free Community Edition needs its own compute; running it on a dedicated t3.medium keeps it isolated from the app server's resources so a heavy scan never competes with the running application |
-| **Amazon ECR** | Private Docker image registry | Integrates natively with IAM/OIDC (no separate registry credentials to manage) and with the AWS CLI tooling already used throughout the pipeline |
-| **AWS Systems Manager (SSM)** | Remote command execution for deployment, and Parameter Store for secrets | Lets the CI pipeline deploy to EC2 without opening SSH to the internet or storing an SSH private key as a GitHub secret — authorization is entirely IAM-based |
-| **IAM + OIDC** | Authenticates GitHub Actions to AWS | Issues short-lived (~1 hour) credentials scoped to this exact repository, instead of long-lived `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` secrets that never expire and are a larger risk if leaked |
-| **S3 + DynamoDB** | Terraform remote state storage and state locking | Keeps infrastructure state out of the repository, versioned and encrypted, with DynamoDB preventing two pipeline runs from corrupting state by applying concurrently |
-| **Security Groups** | Network-level firewalling per instance | Configured with least privilege — SSH restricted rather than open to `0.0.0.0/0`, and only the ports each service actually needs are opened |
-| **Neon (PostgreSQL)** | Application database | Free-tier managed Postgres with no server to patch or back up manually; kept as the database of record throughout this deployment rather than migrating to a self-hosted alternative |
-
-
-Why not a full high-availability setup
-
-A production system with real traffic would warrant an Application Load Balancer across multiple Availability Zones, an Auto Scaling Group, and Multi-AZ RDS. That wasn't built here for two reasons: cost (an ALB, NAT Gateway, and Multi-AZ RDS all fall outside AWS Free Tier, adding roughly $60–80/month with no live traffic to justify it yet), and time (a multi-AZ VPC with load balancing takes meaningfully longer to build and verify than a single-instance deployment within this assignment's window). The single-EC2-per-service approach here is the pragmatic trade-off for a working, secured, take-home deployment — the HA design is the documented next step once real traffic exists to justify the added cost.
-
----
-
-# 5. GitHub OIDC Authentication
-
-The CI/CD pipeline does not require long-lived AWS access keys to be stored in GitHub.
-
-Instead, GitHub Actions uses OpenID Connect (OIDC) to authenticate with AWS.
-
-The authentication flow is:
-
-```text
-GitHub Actions
-      |
-      | OIDC Token
-      v
-AWS STS
-      |
-      | AssumeRoleWithWebIdentity
-      v
-AWS IAM Role
-      |
-      v
-Temporary AWS Credentials
-```
-
-This avoids storing a permanent:
-
-```text
-AWS_ACCESS_KEY_ID
-AWS_SECRET_ACCESS_KEY
-```
-
-inside the GitHub repository.
-
-The GitHub Actions workflow uses the AWS IAM role configured for the repository.
-
----
-
-# 6. GitHub Actions Configuration
-
-The CI/CD workflow is triggered from the deployment branch:
-
-```text
-cicd
-```
-
-The workflow performs the following operations:
-
-```text
-Checkout source code
-        |
-        v
-Configure AWS credentials
-using GitHub OIDC
-        |
-        v
-Login to Amazon ECR
-        |
-        v
-Build backend image
-        |
-        v
-Push backend image
-        |
-        v
-Build frontend image
-        |
-        v
-Push frontend image
-```
-
-The AWS account ID is maintained as a GitHub repository variable.
-
-The IAM role ARN is maintained as a GitHub repository secret.
-
-Example configuration:
-
-```text
-GitHub Variables
-
-AWS_ACCOUNT_ID
-```
-
-```text
-GitHub Secrets
-
-AWS_CI_ROLE_ARN
-```
-
-No permanent AWS access key is required by the workflow.
-
----
-
-# 7. Docker Images
-
-The application is divided into two Docker images.
-
-## Backend
-
-ECR repository:
-
-```text
-serphawk-backend
-```
-
-The backend runs the FastAPI application using Uvicorn.
-
-Default application port:
-
-```text
-8000
-```
-
-## Frontend
-
-ECR repository:
-
-```text
-serphawk-frontend
-```
-
-The frontend runs the Next.js application.
-
-Default application port:
-
-```text
-3000
-```
-
----
-
-# 8. Docker Compose
-
-Docker Compose is used on the EC2 instance to run the application containers.
-
-The deployment contains two primary services:
-
-```yaml
-services:
-  backend:
-    image: <ECR-BACKEND-IMAGE>
-
-  frontend:
-    image: <ECR-FRONTEND-IMAGE>
-```
-
-The containers communicate through the Docker Compose network.
-
-The frontend is configured to communicate with the backend API using the configured API base URL.
-
----
-
-# 9. EC2 Deployment
-
-The EC2 instance is responsible for running the production containers.
-
-After the images are available in ECR, the EC2 host authenticates with ECR and pulls the required images.
-
-Typical deployment commands are:
-
-```bash
-aws ecr get-login-password --region us-east-1 \
-  | docker login \
-  --username AWS \
-  --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
-```
-
-Pull the latest images:
-
-```bash
-docker compose pull
-```
-
-Start the application:
-
-```bash
-docker compose up -d
-```
-
-Check running containers:
-
-```bash
-docker ps
-```
-
-Check Docker Compose services:
-
-```bash
-docker compose ps
-```
-
-View application logs:
-
-```bash
-docker compose logs -f
-```
-
----
-
-# 10. AWS Systems Manager
-
-AWS Systems Manager (SSM) is used to manage the EC2 instance without depending on traditional SSH access.
-
-SSM can be used for:
-
-* Secure session access
-* Running commands on EC2
-* Server administration
-* Troubleshooting
-* Deployment operations
-
-The management flow is:
-
-```text
-AWS Systems Manager
-        |
-        v
-     EC2 Instance
-        |
-        v
-Docker / Docker Compose
-```
-
-This provides a centralized AWS-native method of managing the deployment server.
-
----
-
-# 11. Database
-
-The application uses PostgreSQL as its database.
-
-The database is hosted using:
-
-```text
-Neon PostgreSQL
-```
-
-The EC2 containers connect to the database using the configured database connection string.
-
-Database credentials and connection strings must not be committed to GitHub.
-
-Use environment variables instead.
-
-Example:
-
-```env
-DATABASE_URL=<POSTGRESQL_CONNECTION_STRING>
-```
-
----
-
-# 12. Environment Variables
-
-Environment-specific configuration should be provided through environment variables.
-
-Create a local production environment file on the server rather than committing secrets to GitHub.
-
-Example:
-
-```env
-DATABASE_URL=
-SECRET_KEY=
-NEXT_PUBLIC_API_BASE_URL=
-```
-
-Additional application-specific variables should be added according to the requirements of the backend and frontend.
-
-> **Important:** Never commit `.env` files containing production passwords, API keys, database credentials, JWT secrets, or other sensitive information.
-
-A safe template can be maintained as:
-
-```text
-.env.example
-```
-
----
-
-# 13. Required GitHub Configuration
-
-The GitHub repository requires the following configuration.
-
-## GitHub Variable
-
-```text
-AWS_ACCOUNT_ID
-```
-
-Value:
-
-```text
-<YOUR_AWS_ACCOUNT_ID>
-```
-
-## GitHub Secret
-
-```text
-AWS_CI_ROLE_ARN
-```
-
-Value:
-
-```text
-arn:aws:iam::<YOUR_AWS_ACCOUNT_ID>:role/github-actions-ecr-push-role
-```
-
-The actual AWS account ID and role ARN should not be hard-coded into public documentation if the repository is public.
-
----
-
-# 14. IAM OIDC Trust Relationship
-
-The IAM role is configured to trust GitHub's OIDC provider.
-
-The trust relationship restricts the role to the intended GitHub repository and deployment branch.
-
-Repository:
-
-```text
-mrurz10/SERP-Hawk-CRM-V2
-```
-
-Deployment branch:
-
-```text
-cicd
-```
-
-The expected GitHub subject is:
-
-```text
-repo:mrurz10/SERP-Hawk-CRM-V2:ref:refs/heads/cicd
-```
-
-The OIDC audience is:
-
-```text
-sts.amazonaws.com
-```
-
-This restricts the role's OIDC trust to the intended GitHub Actions workflow context.
-
----
-
-# 15. ECR Repositories
-
-The deployment uses two ECR repositories:
-
-```text
-serphawk-backend
-serphawk-frontend
-```
-
-Example ECR image locations:
-
-```text
-<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/serphawk-backend:latest
-```
-
-```text
-<ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/serphawk-frontend:latest
-```
-
-The GitHub Actions pipeline builds and pushes the images to these repositories.
-
----
-
-# 16. EC2 Security
-
-The EC2 Security Group controls inbound and outbound network access.
-
-Only the ports required by the application should be exposed publicly.
-
-For the current Docker deployment:
-
-```text
-Frontend: 3000
-Backend:  8000
-```
-
-If a reverse proxy or domain is configured, public traffic can instead be routed through the appropriate HTTP/HTTPS ports.
-
-For production environments, unnecessary ports should not be exposed to the public internet.
-
----
-
-# 17. Deployment Verification
-
-After deployment, verify the EC2 containers:
-
-```bash
-docker ps
-```
-
-Expected services:
-
-```text
-serp-hawk-frontend
-serp-hawk-backend
-```
-
-Check the frontend:
-
-```text
-http://<EC2-PUBLIC-IP>:3000
-```
-
-Check the backend:
-
-```text
-http://<EC2-PUBLIC-IP>:8000
-```
-
-If a domain/reverse proxy is configured, use the production domain instead.
-
-Check logs:
-
-```bash
-docker compose logs frontend
-```
-
-```bash
-docker compose logs backend
-```
-
----
-
-# 18. Updating the Application
-
-To deploy a new version:
-
-```bash
-git add .
-git commit -m "Update application"
-git push origin cicd
-```
-
-GitHub Actions then:
-
-```text
-Push code
-   ↓
-Run workflow
-   ↓
-Authenticate using OIDC
-   ↓
-Build Docker images
-   ↓
-Push images to ECR
-```
-
-The EC2 deployment can then pull the updated images:
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-Verify:
-
-```bash
-docker compose ps
-```
-
----
-
-# 19. Rollback
-
-If a new Docker image causes a deployment problem, the previous image tag can be redeployed from ECR.
-
-For production deployments, immutable image tags such as Git commit SHA values are recommended instead of relying only on:
-
-```text
-latest
-```
-
-Example:
-
-```text
-serphawk-backend:<commit-sha>
-serphawk-frontend:<commit-sha>
-```
-
-This makes it possible to identify exactly which version is running on EC2.
-
----
-
-# 20. Project Deployment Files
-
-The deployment-related files include:
-
-```text
-.github/
-└── workflows/
-    └── deploy.yml
-
-Dockerfile
-docker-compose.yml
-.env.example
-```
-
-The exact filenames may vary depending on the final repository structure.
-
-These files define the application containerization and CI/CD deployment process.
-
----
-
-# 21. Technology Stack
-
-| Component               | Technology          |
-| ----------------------- | ------------------- |
-| Frontend                | Next.js 16          |
-| UI                      | React 19            |
-| Language                | TypeScript          |
-| Styling                 | Tailwind CSS        |
-| Backend                 | FastAPI             |
-| Backend Language        | Python 3.13         |
-| ORM                     | SQLModel            |
-| Server                  | Uvicorn             |
-| Real-time communication | WebSockets          |
-| Database                | PostgreSQL          |
-| Database Provider       | Neon                |
-| Containers              | Docker              |
-| Container Management    | Docker Compose      |
-| CI/CD                   | GitHub Actions      |
-| Container Registry      | Amazon ECR          |
-| Compute                 | Amazon EC2          |
-| AWS Authentication      | IAM + GitHub OIDC   |
-| EC2 Management          | AWS Systems Manager |
-| Source Control          | GitHub              |
-
----
-
-# 22. Why This AWS Architecture Was Selected
-
-## EC2
-
-Provides direct control over the application server and supports the existing Docker Compose deployment model.
-
-## ECR
-
-Provides a private AWS-native registry for storing the backend and frontend Docker images.
-
-## IAM
-
-Provides controlled permissions for AWS resources.
-
-## GitHub OIDC
-
-Allows GitHub Actions to authenticate to AWS using temporary credentials instead of storing long-lived AWS access keys.
-
-## Systems Manager
-
-Provides secure EC2 management and command execution without requiring traditional SSH-based administration.
-
-## Security Groups
-
-Provide network-level access control for the EC2 instance.
-
-## Neon PostgreSQL
-
-Provides a managed PostgreSQL database without requiring the database server to be maintained directly on the EC2 instance.
-
----
-
-# 23. End-to-End CI/CD Architecture
-
-```text
-                         ┌──────────────────┐
-                         │    Developer     │
-                         └────────┬─────────┘
-                                  │
-                              git push
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │     GitHub       │
-                         │  cicd branch     │
-                         └────────┬─────────┘
-                                  │
-                                  ▼
-                       ┌──────────────────────┐
-                       │   GitHub Actions     │
-                       │      CI/CD           │
-                       └──────────┬───────────┘
-                                  │
-                              OIDC Token
-                                  │
-                                  ▼
-                       ┌──────────────────────┐
-                       │      AWS IAM         │
-                       │ github-actions-      │
-                       │ ecr-push-role        │
-                       └──────────┬───────────┘
-                                  │
-                         Temporary Credentials
-                                  │
-                                  ▼
-                       ┌──────────────────────┐
-                       │     Amazon ECR       │
-                       │                      │
-                       │  Backend   Frontend  │
-                       └──────────┬───────────┘
-                                  │
-                              Pull Images
-                                  │
-                                  ▼
-                       ┌──────────────────────┐
-                       │       EC2            │
-                       │                      │
-                       │   Docker Compose     │
-                       │                      │
-                       │  ┌────────┐ ┌──────┐ │
-                       │  │Next.js │ │FastAPI│ │
-                       │  │ :3000  │ │ :8000 │ │
-                       │  └────────┘ └───┬──┘ │
-                       └──────────────────┼────┘
-                                          │
-                                          ▼
-                               ┌──────────────────┐
-                               │ Neon PostgreSQL  │
-                               └──────────────────┘
-
-                    AWS Systems Manager
+                        Internet
                             │
                             ▼
-                           EC2
+                 ┌─────────────────────┐
+                 │   EC2 Security Group │
+                 │  (least-privilege)    │
+                 │  22  → My IP only     │
+                 │  80/443 → Anywhere    │
+                 │  3000 → Anywhere      │
+                 │  8000 → Anywhere      │
+                 └──────────┬───────────┘
+                            │
+                 ┌──────────▼───────────┐
+                 │   EC2 (Ubuntu 24.04)  │
+                 │   t2/t3.micro          │
+                 │                        │
+                 │  systemd: frontend     │
+                 │   Next.js  :3000       │
+                 │                        │
+                 │  systemd: backend      │
+                 │   FastAPI/Uvicorn:8000 │
+                 └──────────┬───────────┘
+                            │
+                            ▼
+                 ┌───────────────────────┐
+                 │   Neon PostgreSQL      │
+                 │  (managed, serverless) │
+                 └───────────────────────┘
 ```
 
+### AWS services used and why
+
+| Service | Purpose | Justification |
+|---|---|---|
+| **EC2 (t2/t3.micro)** | Hosts both frontend and backend | Free Tier eligible; simplest way to run a full-stack app end-to-end within a short deployment window, without the cost/complexity of ECS, EKS, or Elastic Beanstalk for a project this size |
+| **Security Groups** | Firewall rules | Configured with least privilege — SSH (port 22) restricted to a single IP instead of the internet, rather than left open to `0.0.0.0/0` |
+| **systemd** | Process management | Runs both the frontend and backend as background services that auto-restart on crash and survive SSH disconnects/reboots, instead of relying on a terminal staying open |
+| **Neon (PostgreSQL)** | Database | Free-tier managed Postgres; avoided provisioning RDS to keep the deployment lean and avoid additional Free Tier hour/storage tracking |
+
+### Why a single EC2 instance (and not a full HA setup)
+
+For a real production system with real user traffic, the right architecture would look different: an **Application Load Balancer** distributing traffic across **EC2 instances in an Auto Scaling Group spanning two Availability Zones**, with the backend and database placed in **private subnets** (not directly internet-facing), a **NAT Gateway** for outbound access, **Multi-AZ RDS** for the database, and **Secrets Manager** for credentials instead of a `.env` file.
+
+That setup was deliberately not built here, for two reasons:
+
+1. **Cost** — an ALB, NAT Gateway, and Multi-AZ RDS all fall outside AWS Free Tier and would add roughly $60–80/month in fixed costs for an app with no live traffic yet.
+2. **Time** — provisioning a multi-AZ VPC, subnet routing, and load balancer chain takes meaningfully longer to build and debug correctly than a single-instance deployment.
+
+The single-EC2 approach was chosen as the pragmatic trade-off: it demonstrates a working, secured, persistent deployment now, while the HA design above is the documented next step once the app has real traffic to justify the added cost and complexity.
+
+### Known limitation
+
+The EC2 instance currently uses a standard (non-Elastic) public IP, which can change if the instance is stopped and restarted. For a longer-lived production deployment, this would be replaced with an Elastic IP (or, better, a Route 53 domain name pointing at the load balancer in the HA design above) so the address never changes.
+
 ---
 
+## Local Development Setup
+
+### Prerequisites
+
+- Node.js 18+
+- Python 3.12+
+- A PostgreSQL database (Neon recommended)
+- Google Gemini API key (free tier: [aistudio.google.com](https://aistudio.google.com/app/apikey))
+
+### Backend
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python create_tables.py
+uvicorn main:app --reload
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### Environment Variables
+
+Create a `.env` file in the project root:
+
+```
+DATABASE_URL=postgresql://user:password@host:port/database
+GEMINI_API_KEY=your_gemini_key
+OPENAI_API_KEY=            # optional — only needed if you re-enable OpenAI-based modules
+SECRET_KEY=your_secret_key
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your_email@gmail.com
+SMTP_PASSWORD=your_app_password
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000   # local development
+```
+
+For the deployed frontend, `frontend/.env.local` sets:
+
+```
+NEXT_PUBLIC_API_BASE_URL=http://<EC2_PUBLIC_IP>:8000
+```
+
+**Note:** `.env` and `.env.local` are excluded from version control via `.gitignore` and are never committed.
 
 ---
 
-# 25. Deployment Summary
+## Production Deployment Steps (EC2)
 
-The SERP Hawk CRM V2 application uses a containerized AWS deployment architecture.
+These are the actual steps used to deploy this project to AWS:
 
-Source code is maintained in GitHub. GitHub Actions automatically builds the frontend and backend Docker images and pushes them to Amazon ECR.
+1. Launch an EC2 instance (Ubuntu 24.04 LTS, t2/t3.micro) with a security group restricting SSH to a single IP and opening ports 80, 443, 3000, and 8000.
+2. SSH into the instance and install Python 3.12, `python3-venv`, Git, and Node.js 20.
+3. Transfer the project code (excluding `node_modules`, `.venv`, and build artifacts) via `scp`.
+4. Set up the Python virtual environment and install backend dependencies.
+5. Create `.env` with the Neon database URL and Gemini API key.
+6. Run the backend as a persistent `systemd` service (`serphawk-backend.service`) bound to `0.0.0.0:8000`.
+7. Install frontend dependencies, add a 1–2GB swapfile (needed for the Next.js production build to complete on a memory-constrained t2.micro), and run `npm run build`.
+8. Set `NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.local` to the EC2 instance's public IP.
+9. Run the frontend as a persistent `systemd` service (`serphawk-frontend.service`) bound to `0.0.0.0:3000`.
+10. Verify both services survive SSH disconnects and auto-restart on crash (`systemctl status`).
 
-GitHub authenticates with AWS through OIDC and the `github-actions-ecr-push-role` IAM role, eliminating the need for long-lived AWS access keys.
+---
 
-The Docker images are deployed to an Amazon EC2 instance, where Docker Compose runs the frontend and backend containers.
+## How to Add New Features
 
-AWS Systems Manager provides secure management of the EC2 instance, while Neon PostgreSQL provides the managed database service.
+### Backend (FastAPI)
 
-This architecture provides a straightforward containerized deployment with automated image delivery, controlled AWS permissions, and secure EC2 management.
+1. **Add Database Models**:
+   - Edit `database.py` to add new SQLModel classes
+   - Run `python create_tables.py` to create tables
+
+2. **Create API Endpoints**:
+   - Add routes in `main.py` or create new modules
+   - Follow RESTful conventions
+   - Add proper authentication/authorization
+
+3. **Add Business Logic**:
+   - Create functions in appropriate modules under `modules/`
+   - Use dependency injection for database sessions
+
+4. **Update Dependencies**:
+   - Add to `requirements.txt`
+   - Test with `pip install -r requirements.txt`
+
+### Frontend (Next.js)
+
+1. **Create New Pages**:
+   - Add to `frontend/src/app/` following the routing structure
+   - Use TypeScript for type safety
+
+2. **Add Components**:
+   - Create reusable components in `frontend/src/components/`
+   - Follow existing patterns for consistency
+
+3. **API Integration**:
+   - Use the existing API utilities in `frontend/src/lib/`
+   - Add new API calls as needed
+
+4. **Styling**:
+   - Use Tailwind CSS classes
+   - Follow the design system
+
+## API Documentation
+
+The API documentation is available at `/docs` when the backend is running (Swagger UI) and `/redoc` for ReDoc.
+
+## License
+
+This project is proprietary. All rights reserved.
