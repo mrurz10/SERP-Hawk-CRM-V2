@@ -11,7 +11,7 @@ variable "name_prefix" {
 variable "instance_type" {
   description = "EC2 instance type for the deployment server"
   type        = string
-  default     = "t3.medium"
+  default     = "t3.micro"
 }
 
 variable "allowed_http_cidr" {
