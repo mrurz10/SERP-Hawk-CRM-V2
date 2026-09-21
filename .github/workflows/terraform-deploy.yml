@@ -34,6 +34,14 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Ensure SonarQube DB password exists in SSM
+        run: |
+          aws ssm put-parameter \
+            --name "/sonarqube/db_password" \
+            --value "${{ secrets.SONAR_DB_PASSWORD }}" \
+            --type "SecureString" \
+            --overwrite
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
